@@ -1,0 +1,13 @@
+# Can be placed inside ~/.config/systemd/user/
+# logs using `journalctl --user -f`
+[Unit]
+Description=Run whisper-server
+
+[Service]
+RestartSec=5
+Restart=always
+RuntimeMaxSec=2h
+ExecStart=whisper-server --host 127.0.0.1 --port 58080 -t 8 -nt -nc -m ~/.models/ggml-small.bin
+
+[Install]
+WantedBy=multi-user.target

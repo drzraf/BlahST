@@ -1,0 +1,11 @@
+[Unit]
+Before=sleep.target
+StopWhenUnneeded=yes
+[Service]
+Type=oneshot
+StandardOutput=syslog
+RemainAfterExit=yes
+ExecStart=-/usr/bin/echo stopping whisper-server before suspend ; /usr/bin/systemctl stop whisper-server; echo done'
+ExecStop=-/usr/bin/date starting whisper-server before suspend ; /usr/bin/systemctl start whisper-server; echo done'
+[Install]
+WantedBy=sleep.target

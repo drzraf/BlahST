@@ -1,5 +1,4 @@
-#!/usr/bin/zsh
-# Operation in bash is not guaranteed.
+#!/usr/bin/bash
 # Copyright (c) 2024, 2025 Quantius Benignus
 #
 # THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
@@ -11,24 +10,48 @@
 # SOFTWARE.
 #--------------------------------------------------------------------------
 
-# NAME: wsi
-# PREREQUSITES:
-#  - whisper.cpp installation (see https://github.com/ggerganov/whisper.cpp) or a portable whisperfile
-#  - recent versions of 'sox', 'curl', 'xsel' or 'wl-copy' and CLI tools from your system's repositories.
-#  - optional xdotool (X11) or ydotool (Wayland) for automatic paste after successful transcription
-#--------------------------------------------------------------------------
+# To be used in correlation with:
+# 1. a (systemd-run?) whisper-server (see whisper-server.service)
+# 2. a set of keybindings to run (and optionally stop), the `wsi -n` command (resp `wsi -k`)
+
+
+# ToDo:
+# UI: checkbox (bound to gsetting autopaste)
+
+# Same script can be used to send the SIGINT.
+# `wsi -k` is just an handy equivalent to `pkill -SIGINT wsi`
+if [[ $1 == -k ]]; then
+	pkill -SIGINT -eo wsi
+	exit
+fi
 
 # Are we already running this? (prevent multiple hotkey presses)
 pidof -q wsi && exit 0
 
-#---USER CONFIGURATION BLOCK----------------------------------------------------------------
+export LD_LIBRARY_PATH=/usr/local/lib KEEP_TEMP_FILE=1
+
 #The main configuration for this and all other BlahST tools is now in blahst.cfg, please, edit that file as needed.
 source $HOME/.config/blahst.cfg
 source $HOME/.local/bin/blahst-helpers
+
+# Get the current input method as a good hint for the language to be used.
+# (if found it forces the language)
+if [[ ${XDG_CURRENT_DESKTOP,,} =~ gnome ]] && type -P gsettings &> /dev/null; then
+    input_method=$(gsettings get org.gnome.desktop.input-sources mru-sources | cut -d"'" -f2 | cut -d"+" -f1)
+    [[ $input_method =~ uk|us ]] && input_method=en
+    if [[ -n $input_method && ${#input_method} == 2 ]]; then
+	# use for language forcing(?)
+	LANGUAGE=$input_method
+	# ensure `dotool` use the current input method in case of ctrl+v
+	export DOTOOL_XKB_LAYOUT=$input_method
+    fi
+fi
+
 #Local overrides:
 AUTOPASTE=1
 #PRIMESEL=1
-#---END USER CONFIG BLOCK-------------------------------------------------------------------
+
+#---END USER CONFIG BLOCK---
 
 # Process command line arguments first
 while [ $# -gt 0 ]; do
@@ -36,13 +59,6 @@ while [ $# -gt 0 ]; do
         -p|--primary)
             # To enable pasting with the middle mouse button
             PRIMESEL=1
-            shift
-            ;;
-        -c|--clipboard)
-            # This is transitional warning due to breaking change (will be removed in the future). Clipboard is now the default:
-            desknote "Breaking Change:" "The '-c' flag is deprecated, since clipboard is now default. \n \
-            Remove unnecessary '-c' from your desktop shortcut definitions. \n \
-            To use primary selection as the text source, use the '-p' flag in your desktop shortcuts."
             shift
             ;;
         -w|--whisperfile)
@@ -153,25 +169,16 @@ sig_handler() {
     exit
 }
 
-#Hear the complaints of the above tools and do not continue with the sequence:
+umask 077
 set -e
 
-umask 077
-if (( 1 )); then # previous mode
-    rec -q -t wav "$ramf" rate 16k silence 1 0.1 1% 1 2.0 5% 2>/dev/null
-else # disabled for now
-    # If we want to avoid the 2s sox VAD lag when we stopped to speak
-    # An UI-facing button could kill the process as soon as pressed to retrieve the translation
-    # quickly. Ideally, whisper.cpp server should be used in streaming mode.
-    #
-    # https://github.com/chirlu/sox/pull/4/files is likely desirable to avoid loosing 250ms of audio
-    # Note that in case of interruption, Sox may truncate the wav badly leading whisper.cpp to
-    # believe it's an week-long audio file.
-    rec -q -t wav -r 16k -b 16 -c 1 --buffer 2500  --input-buffer 2500 "$ramf" rate 16k silence 1 0.1 1% 1 2.0 5% &
-    pid=$!
-    trap sig_handler SIGINT
-    wait
-fi
+# https://github.com/chirlu/sox/pull/4/files is likely desirable to avoid loosing 250ms of audio
+# Note that in case of interruption, Sox may badly truncate the wav leading whisper.cpp to
+# believe it's an week-long audio file.
+rec -q -t wav -r 16k -b 16 -c 1 --buffer 2500 --input-buffer 2500 "$ramf" rate 16k silence 1 0.1 1% 1 2.0 5% &
+pid=$!
+trap sig_handler SIGINT
+wait
 
 send_audio
 handle_transcription

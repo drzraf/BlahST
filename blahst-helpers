@@ -1,4 +1,4 @@
-#!/bin/zsh
+#!/bin/bash
 
 #---HELPER FUNCTIONS--------------------------------------------------------------------------
 #Notification code, prefers zenity, then notify-send, which should be available across the
@@ -49,8 +49,11 @@ autopaste() {
 	(( $PRIMESEL )) && paste_type=mouse || paste_type=ctrl-v
     fi
 
+    # dotool
+    if command -v dotool &> /dev/null; then
+        { [[ $paste_type == mouse ]] && echo click middle || echo key ctrl+v; } | dotool
     # wayland + ydotool
-    if [[ $wm == wayland ]] && command -v ydotool &> /dev/null; then
+    elif [[ $wm == wayland ]] && command -v ydotool &> /dev/null; then
 	# The key sym sequence may differ from the one below on a variety of systems and keyboard layouts:
 	[[ $paste_type == mouse ]] && ydotool click 0xC2 || ydotool key 37:1 55:1 55:0 37:0
     else # xdotool fallback
