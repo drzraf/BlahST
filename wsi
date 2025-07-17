@@ -14,19 +14,38 @@
 # 1. a (systemd-run?) whisper-server (see whisper-server.service)
 # 2. a set of keybindings to run (and optionally stop), the `wsi -n` command (resp `wsi -k`)
 
-
 # ToDo:
 # UI: checkbox (bound to gsetting autopaste)
 
 # Same script can be used to send the SIGINT.
-# `wsi -k` is just an handy equivalent to `pkill -SIGINT wsi`
+# `wsi -k` is about killing the right ongoing `rec` process using filename as a discriminator
+
+ramf="/dev/shm/$(basename $0)-file-$USER"
 if [[ $1 == -k ]]; then
-	pkill -SIGINT -eo wsi
+	pkill -SIGINT -ef "rec.*$ramf"
 	exit
 fi
 
 # Are we already running this? (prevent multiple hotkey presses)
-pidof -q wsi && exit 0
+pidof -q "$(basename $0)" && exit 0
+
+let ASSISTANT=0
+
+declare -A ASSISTANT_PROMPTS=(
+    [assistant]="Provide a very concise response to the following: %s"
+    [translator]="Respond in chinese and be concise. Translate the following to chinese: %s"
+    [computer]="<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\n<|im_start|>user\nBehave like Grammarly on this, by simply providing only the corrected text and nothing else, no explanations, no markdown, etc.: %s<|im_end|>\n<|im_start|>assistant\n"
+    [linux_helper]="You are a Linux command helper. To any request, you respond only with a precise linux command. Do not output any other text. Here is the request: %s"
+    [coordinator]="You are a helpful scheduler. When I ask you to schedule a task, you will format it like this: - [ ] @TODO Task body. Let's give it a try: %s"
+)
+
+declare -a llama_base_cmd=("$llamf" -t "$NTHR" --temp 0 -no-cnv --no-display-prompt)
+
+declare -a ASSISTANT_CMD=("${llama_base_cmd[@]}" -m "$LIGHTLMODEL" -ngl 999 -c 2048 -n 150)
+declare -a TRANSLATOR_CMD=("${llama_base_cmd[@]}" -m "$LIGHTLMODEL" -ngl 999 -c 2048 -n 80)
+declare -a COMPUTER_CMD=("${llama_base_cmd[@]}" -m "$HEAVYMODEL" -ngl 99 -c 4096 -mli)
+declare -a LINUX_HELPER_CMD=("${llama_base_cmd[@]}" -m "$LLMODEL" -ngl 99 -c 256 -n 100 -- )
+declare -a COORDINATOR_CMD=("${llama_base_cmd[@]}" -m "$LLMODEL" -ngl 99 -c 512 -n 100)
 
 export LD_LIBRARY_PATH=/usr/local/lib KEEP_TEMP_FILE=1
 
@@ -37,11 +56,11 @@ source $HOME/.local/bin/blahst-helpers
 # Get the current input method as a good hint for the language to be used.
 # (if found it forces the language)
 if [[ ${XDG_CURRENT_DESKTOP,,} =~ gnome ]] && type -P gsettings &> /dev/null; then
-    input_method=$(gsettings get org.gnome.desktop.input-sources mru-sources | cut -d"'" -f2 | cut -d"+" -f1)
-    [[ $input_method =~ uk|us ]] && input_method=en
+    input_method=$(gsettings get org.gnome.desktop.input-sources mru-sources | cut -d"'" -f4 | cut -d"+" -f1)
     if [[ -n $input_method && ${#input_method} == 2 ]]; then
 	# use for language forcing(?)
 	LANGUAGE=$input_method
+	[[ $LANGUAGE =~ uk|us ]] && LANGUAGE=en
 	# ensure `dotool` use the current input method in case of ctrl+v
 	export DOTOOL_XKB_LAYOUT=$input_method
     fi
@@ -53,51 +72,56 @@ AUTOPASTE=1
 
 #---END USER CONFIG BLOCK---
 
-# Process command line arguments first
-while [ $# -gt 0 ]; do
-    case "$1" in
-        -p|--primary)
-            # To enable pasting with the middle mouse button
-            PRIMESEL=1
-            shift
-            ;;
-        -w|--whisperfile)
-            whf="$WHISPERFILE"
-            shift
-            ;;
-        -n|--netapi)
-            #This uses the hostname or IP and port specified in the config block
-            #Can be overwritten with a supplied command-line argument IP:PORT instead of this option
-            IPnPORT="$WHOST:$WPORT"
-            if [[ "$(curl -s -f -o /dev/null -w '%{http_code}' $IPnPORT)" != "200" ]]; then
-                echo "Can't connect to whisper.cpp server at provided address!" >&2
-                desknote "No connection to Whisper.cpp server" "No whisper.cpp server at $IPnPORT."
-                exit 1
-            fi
-            shift
-            ;;
-        --help)
-            echo "Usage: $0 [-p|--primary] [-n|--netapi] [-w|--whisperfile] [IP:PORT]"
-            echo "  -p, --primary: Use PRIMARY selection instead of CLIPBOARD (default - the better choice when autopaste is on)"
-            echo "  -n, --netapi: Use the preconfigured IP/hostanem and port to call a whisper.cpp server for inference."
-            echo "  -w, --whisperfile: Use the preconfigured whisperfile***.llamafile for inference."
-            echo "  any command-line argument: Expected to be of the form IP:PORT or HOSTNAME:PORT to call a server other than the preconfigured."
-            exit 0
-            ;;
-        *)
-            #The network address and port should have already been sanitized in extension
-            IPnPORT=$1
-            if [[ "$(curl -s -f -o /dev/null -w '%{http_code}' $IPnPORT)" != "200" ]]; then
-                echo "Can't connect to a whisper.cpp server at provided address!" >&2
-                desknote "No connection to Whisper.cpp server" "No whisper.cpp server at $IPnPORT."
-                exit 1
-            fi
-            shift
-            ;;
-    esac
-done
+parse() {
+    while [ $# -gt 0 ]; do
+	case "$1" in
+            -a|--assistant)
+		ASSISTANT=1
+		shift
+		;;
+            -p|--primary)
+		# To enable pasting with the middle mouse button
+		PRIMESEL=1
+		shift
+		;;
+            -w|--whisperfile)
+		whf="$WHISPERFILE"
+		shift
+		;;
+            -n|--netapi)
+		#This uses the hostname or IP and port specified in the config block for Whisper.cpp (not llama)
+		#Can be overwritten with a supplied command-line argument IP:PORT instead of this option
+		IPnPORT="$WHOST:$WPORT"
+		shift
+		;;
+            --help)
+		echo "Usage: $0 [-p|--primary] [-n|--netapi] [-w|--whisperfile] [IP:PORT]"
+		echo "  -p, --primary: Use PRIMARY selection instead of CLIPBOARD (default - the better choice when autopaste is on)"
+		echo "  -n, --netapi: Use the preconfigured IP/hostanem and port to call a whisper.cpp server for inference."
+		echo "  -w, --whisperfile: Use the preconfigured whisperfile***.llamafile for inference."
+		echo "  any command-line argument: Expected to be of the form IP:PORT or HOSTNAME:PORT to call a server other than the preconfigured."
+		exit 0
+		;;
+            *)
+		#The network address and port should have already been sanitized in extension
+		IPnPORT=$1
+		shift
+		;;
+	esac
+    done
 
-send_audio() {
+    if [[ -n $IPnPORT ]]; then
+	if [[ $(curl -s -f -o /dev/null -w '%{http_code}' "$IPnPORT") != 200 ]]; then
+            echo "Can't connect to a whisper.cpp server at provided address!" >&2
+            desknote "No connection to Whisper.cpp server" "No whisper.cpp server at $IPnPORT."
+            exit 1
+	fi
+    fi
+
+}
+
+
+transcribe() {
     #The server inference has precedence (i.e. -w will be ignored if -n is present).
     if [ -n "$IPnPORT" ]; then
 	str=$(curl -S -s $IPnPORT/inference \
@@ -112,7 +136,7 @@ send_audio() {
 	#echo "Using whisperfile: "
 	str="$($whf -t $NTHR -nt -f '$ramf' 2>/dev/null)"
     else
-	str="$(transcribe -t $NTHR -nt -m $WMODEL -f '$ramf' 2>/dev/null)"
+	str="$(transcribe -t $NTHR -nt -fa -m $WMODEL -f '$ramf' 2>/dev/null)"
     fi
 
     [[ ${KEEP_TEMP_FILE:-0} != 1 ]] && rm -f "$ramf"
@@ -122,22 +146,74 @@ send_audio() {
     str="${str/\[*\]}"
     str="${str#$'\n'}"
     str="${str#$'\n'}"
-    #Prefer the power of zsh, but lose full POSIX compliance.
-    if [ -n "$ZSH_NAME" ]; then
-	str="${str#*([[:space:]])}"
-	str="${(C)str:0:1}${str#?}"
-    elif [ -n "$BASH" ]; then
-	#Running in bash because you changed the shebang on line 1
-	str="${str##+([[:space:]])}"
-	str="${str^}"
-    else
-	echo "Unknown shell, assuming bash compliance"
-	str="${str##+([[:space:]])}"
-	str="${str^}"
-    fi
 }
 
-handle_transcription() {
+speakup() {
+    model_rate="${1:-$TTSMODEL_RATE}" && shift
+    aplay -r "$model_rate" -f S16_LE -t raw - 2>/dev/null
+}
+
+tts_speakup() {
+    model="$1" && shift
+    model_rate="$1" && shift
+    tee /dev/tty /dev/shm/lmf | sed 's/\*//g' | piper --model "$model" --output-raw 2>/dev/null | speakup "$model_rate"
+}
+
+assistant() {
+   str="${str#*(+([![:space:]]))}"
+   str="${str^}"
+
+   # First word is a recognized 'wake' word?
+   if [[ "$str" == ?[Aa]ssistant* ]]; then
+       str="${str#?[Aa]ssistant[,.] }"
+       str="${str^}"
+       sprintf -v prompt "${ASSISTANT_PROMPTS[assistant]}" "$str"
+
+       "${ASSISTANT_CMD[@]}" --prompt "$prompt" 2>/dev/null | tts_speakup "$TTSMODEL"
+       str="$str\n"$(< /dev/shm/lmf) #We can still paste the result
+
+   elif [[ "$str" == ?[Tt]ranslator* ]]; then
+       str="${str#?[Tt]ranslator[,.] }"
+       sprintf -v prompt "${ASSISTANT_PROMPTS[translator]}" "$str"
+       # tts the request
+       echo "$str" | piper --model "$TTSMODEL" --output-raw 2>/dev/null | speakup
+       # tts the response
+       "${TRANSLATOR_CMD[@]}" --prompt "$prompt" 2>/dev/null | tts_speakup "$TRANSMODEL" "$TRANSMODEL_RATE"
+       str="$(< /dev/shm/lmf)"
+       str=${str#*(+([![:space:]]))}
+
+   elif [[ "$str" == [Cc]omputer*  ]]; then
+     if [[ $str == *Grammarly* || $str == *proofread* ]]; then
+        if [[ wm == "x11" ]]; then
+            selpaste="$(xsel --primary --output)"
+        elif [[ wm == "wayland" ]]; then
+            selpaste="$(wl-paste --primary --type text)"
+        else
+            #X11 fallback
+            selpaste="$(xsel --primary --output)"
+        fi
+	sprintf -v prompt "${ASSISTANT_PROMPTS[computer]}" "$selpaste"
+        strai=$("${COMPUTER_CMD[@]}" --prompt "$prompt" 2>/dev/null)
+
+     else
+	 sprintf -v prompt "${ASSISTANT_PROMPTS[linux_helper]}" "$str"
+         strai=$("${LINUX_HELPER_CMD[@]}" --prompt "$prompt" 2>/dev/null)
+         # | sed 's/[`\*]//g'
+     fi
+     strai="${strai//\*/}"
+     str="${strai/\[end of text\]}"
+
+   elif [[ "$str" == [Cc]oordinator*  ]]; then
+       sprintf -v prompt "${ASSISTANT_PROMPTS[coordinator]}" "$str"
+       strai=$("${COORDINATOR_CMD[@]}" --prompt "$prompt" 2>/dev/null)
+       str="${strai/\[end of text\]}"
+   fi
+}
+
+paste_result() {
+    str="${str##+([[:space:]])}"
+    str="${str^}"
+
     #We have a result, now we make a few decisions:
     #If this is somehow run in a text console:
     if [[ -z $DISPLAY || -z $DESKTOP_SESSION || -z $XDG_CURRENT_DESKTOP ]]; then
@@ -160,25 +236,22 @@ handle_transcription() {
     fi
 }
 
-sig_handler() {
-    trap - SIGINT
-    # echo "[int] $pid"
-    kill -SIGINT $pid
-    send_audio
-    handle_transcription
-    exit
-}
 
+parse "$@"
 umask 077
 set -e
 
 # https://github.com/chirlu/sox/pull/4/files is likely desirable to avoid loosing 250ms of audio
 # Note that in case of interruption, Sox may badly truncate the wav leading whisper.cpp to
 # believe it's an week-long audio file.
-rec -q -t wav -r 16k -b 16 -c 1 --buffer 2500 --input-buffer 2500 "$ramf" rate 16k silence 1 0.1 1% 1 2.0 5% &
-pid=$!
-trap sig_handler SIGINT
-wait
+rec -q -t wav -r 16k -b 16 -c 1 --buffer 2500 --input-buffer 2500 "$ramf" rate 16k silence 1 0.1 1% 1 2.0 5%
 
-send_audio
-handle_transcription
+transcribe
+if (( ASSISTANT )); then
+    # will replace the transcription in $str
+    # by the result of assistance process
+    assistant;
+fi
+paste_result
+
+

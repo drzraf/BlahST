@@ -3,9 +3,9 @@ Before=sleep.target
 StopWhenUnneeded=yes
 [Service]
 Type=oneshot
-StandardOutput=syslog
+StandardOutput=journal
 RemainAfterExit=yes
-ExecStart=-/usr/bin/echo stopping whisper-server before suspend ; /usr/bin/systemctl stop whisper-server; echo done'
-ExecStop=-/usr/bin/date starting whisper-server before suspend ; /usr/bin/systemctl start whisper-server; echo done'
+ExecStart=-/usr/bin/echo stopping whisper-server before suspend ; /usr/bin/systemctl --user stop whisper-server ; echo done
+ExecStop=-/usr/bin/echo starting whisper-server before suspend ; /usr/bin/systemctl --user start whisper-server ; echo done
 [Install]
 WantedBy=sleep.target
